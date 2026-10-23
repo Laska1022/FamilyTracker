@@ -16,7 +16,7 @@
     <string name="start_sharing">Начать делиться</string>
     <string name="stop_sharing">Остановить</string>
     <string name="sharing_active">Геопозиция передаётся</string>
-    <string name="sharing_stopped">Геопозиция скрыта</string>
+    <string name="sharing_stopped">Сбор геопозиции остановлен</string>
     <string name="sharing_starting">Запуск геопозиции…</string>
     <string name="sharing_error">Передача остановлена. Проверьте разрешения и подключение.</string>
     <string name="tracking_channel">Передача геопозиции</string>
@@ -60,7 +60,7 @@
     <string name="battery_note">Некоторые телефоны могут останавливать службу. Проверьте настройки батареи, если обновления задерживаются. После перезапуска телефона включите передачу вручную.</string>
     <string name="sign_out">Выйти из аккаунта</string>
     <string name="sign_out_confirm">Выйти? Неотправленные точки будут удалены с этого устройства. Для выхода требуется подключение, чтобы подтвердить скрытие истории на сервере.</string>
-    <string name="offline_stop">Сбор остановлен на телефоне. Без сети прежняя точка и доступ к истории могут сохраняться до доставки запроса остановки.</string>
+    <string name="offline_stop">Сбор остановлен на телефоне. Ожидается подтверждение сервера: прежняя точка и доступ к истории могут сохраняться до доставки запроса остановки.</string>
     <string name="no_locations">Пока нет передаваемых геопозиций</string>
     <string name="fresh">Актуальная позиция</string>
     <string name="stale">Устаревшая позиция</string>

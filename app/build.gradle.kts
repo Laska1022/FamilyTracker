@@ -8,6 +8,7 @@ if (file("google-services.json").exists()) apply(plugin = "com.google.gms.google
 android {
     namespace = "com.familytracker.app"
     compileSdk = 36
+    buildToolsVersion = "36.0.0"
     defaultConfig {
         applicationId = "com.familytracker.app"
         minSdk = 26
@@ -33,10 +34,19 @@ android {
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
-    kotlinOptions { jvmTarget = "17" }
-    testOptions { unitTests.isIncludeAndroidResources = true }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { test ->
+            test.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            // Robolectric resolves its Android runtime in the test JVM; honor the build's proxy.
+            listOf("https.proxyHost", "https.proxyPort", "http.proxyHost", "http.proxyPort", "http.nonProxyHosts").forEach { key ->
+                System.getProperty(key)?.let { test.systemProperty(key, it) }
+            }
+        }
+    }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
+kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.11.01"))
     implementation("androidx.compose.ui:ui")

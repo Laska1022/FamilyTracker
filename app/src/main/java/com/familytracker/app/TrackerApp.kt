@@ -15,32 +15,48 @@ import com.google.firebase.firestore.MemoryCacheSettings
 import kotlinx.coroutines.*
 
 class TrackerApp : Application() {
-    var graph: AppGraph? = null; private set
+    var graph: AppGraph? = null
+        private set
+
     override fun onCreate() {
         super.onCreate()
-        val app = if (BuildConfig.USE_EMULATORS) FirebaseApp.initializeApp(this, FirebaseOptions.Builder()
-            .setProjectId("demo-family-tracker").setApplicationId("1:123456789:android:emulator")
-            .setApiKey("demo-api-key").setDatabaseUrl("https://demo-family-tracker-default-rtdb.firebaseio.com").build())
-        else FirebaseApp.initializeApp(this)
-        if (app != null) graph = AppGraph(this)
+        val app =
+            if (BuildConfig.USE_EMULATORS)
+                FirebaseApp.initializeApp(
+                    this,
+                    FirebaseOptions.Builder()
+                        .setProjectId("demo-family-tracker")
+                        .setApplicationId("1:123456789:android:emulator")
+                        .setApiKey("demo-api-key")
+                        .setDatabaseUrl("https://demo-family-tracker-default-rtdb.firebaseio.com")
+                        .build(),
+                )
+            else FirebaseApp.initializeApp(this)
+        if (app != null && !app.options.databaseUrl.isNullOrBlank()) graph = AppGraph(this)
     }
 }
+
 class AppGraph(val app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val firebaseAuth = FirebaseAuth.getInstance()
     val db = FirebaseDatabase.getInstance()
     val firestore = FirebaseFirestore.getInstance()
+
     init {
-        // Our bounded SQLite outbox is the only durable location cache. Avoid cross-account disk caches.
+        // Our bounded SQLite outbox is the only durable location cache. Avoid cross-account disk
+        // caches.
         db.setPersistenceEnabled(false)
-        firestore.firestoreSettings = FirebaseFirestoreSettings.Builder()
-            .setLocalCacheSettings(MemoryCacheSettings.newBuilder().build()).build()
+        firestore.firestoreSettings =
+            FirebaseFirestoreSettings.Builder()
+                .setLocalCacheSettings(MemoryCacheSettings.newBuilder().build())
+                .build()
         if (BuildConfig.USE_EMULATORS) {
             firebaseAuth.useEmulator(BuildConfig.EMULATOR_HOST, 9099)
             db.useEmulator(BuildConfig.EMULATOR_HOST, 9000)
             firestore.useEmulator(BuildConfig.EMULATOR_HOST, 8080)
         }
     }
+
     val settings = SettingsStore(app)
     val auth = AuthRepository(firebaseAuth)
     val outbox = LocationOutbox(app)
