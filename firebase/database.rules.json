@@ -1,0 +1,80 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "circles": {
+      "$circle": {
+        "name": {
+          ".read": "auth != null && root.child('circles').child($circle).child('members').child(auth.uid).exists()",
+          ".write": "auth != null && auth.uid == $circle",
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60"
+        },
+        "members": {
+          ".read": "auth != null && root.child('circles').child($circle).child('members').child(auth.uid).exists()",
+          "$uid": {
+            ".read": "auth != null && auth.uid == $uid",
+            ".write": "(auth != null && auth.uid == $circle) || (auth != null && auth.uid == $uid && !newData.exists())",
+            ".validate": "newData.hasChildren(['name'])",
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "requests": {
+          ".read": "auth != null && auth.uid == $circle",
+          "$uid": {
+            ".read": "auth != null && auth.uid == $uid",
+            ".write": "(auth != null && auth.uid == $uid && root.child('circles').child($circle).child('name').exists() && !root.child('circles').child($circle).child('members').child($uid).exists()) || (auth != null && auth.uid == $circle && !newData.exists())",
+            ".validate": "newData.hasChildren(['name'])",
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "locations": {
+          "$uid": {
+            ".read": "(auth != null && root.child('circles').child($circle).child('members').child(auth.uid).exists()) && root.child('circles').child($circle).child('members').child($uid).exists()",
+            ".write": "(auth != null && auth.uid == $uid && (!newData.exists() || root.child('circles').child($circle).child('members').child($uid).exists())) || (auth != null && auth.uid == $circle && !newData.exists())",
+            ".validate": "newData.hasChildren(['uid','circleId','latitude','longitude','accuracy','deviceTime','uploadedAt','intervalMs'])",
+            "uid": {
+              ".validate": "newData.isString() && newData.val() == $uid"
+            },
+            "circleId": {
+              ".validate": "newData.isString() && newData.val() == $circle"
+            },
+            "latitude": {
+              ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+            },
+            "longitude": {
+              ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+            },
+            "accuracy": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+            },
+            "battery": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+            },
+            "deviceTime": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 60000"
+            },
+            "uploadedAt": {
+              ".validate": "newData.isNumber() && newData.val() == now"
+            },
+            "intervalMs": {
+              ".validate": "newData.val() == 60000 || newData.val() == 300000"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      }
+    }
+  }
+}

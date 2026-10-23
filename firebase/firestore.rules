@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signed() { return request.auth != null; }
+    function owner(circle) { return signed() && request.auth.uid == circle; }
+    function member(circle, uid) { return exists(/databases/$(database)/documents/circles/$(circle)/members/$(uid)); }
+    function active(circle, uid) { return get(/databases/$(database)/documents/circles/$(circle)/sharing/$(uid)).data.enabled == true; }
+    function validPoint(circle, uid) {
+      let p = request.resource.data;
+      return p.keys().hasOnly(['uid','circleId','latitude','longitude','accuracy','speed','battery','deviceTime','uploadedAt'])
+        && p.keys().hasAll(['uid','circleId','latitude','longitude','accuracy','speed','battery','deviceTime','uploadedAt'])
+        && p.uid == uid && p.circleId == circle
+        && p.latitude is number && p.latitude >= -90 && p.latitude <= 90
+        && p.longitude is number && p.longitude >= -180 && p.longitude <= 180
+        && p.accuracy is number && p.accuracy >= 0 && p.accuracy <= 100000
+        && (p.speed == null || (p.speed is number && p.speed >= 0 && p.speed <= 400))
+        && (p.battery == null || (p.battery is int && p.battery >= 0 && p.battery <= 100))
+        && p.deviceTime is int && p.deviceTime > 0 && p.deviceTime <= request.time.toMillis() + 60000
+        && p.uploadedAt == request.time;
+    }
+    match /circles/{circle} {
+      allow read: if signed() && member(circle, request.auth.uid);
+      allow create, update: if owner(circle) && request.resource.data.keys().hasOnly(['name','ownerUid'])
+        && request.resource.data.ownerUid == circle && request.resource.data.name is string
+        && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 60;
+      match /members/{uid} {
+        allow read: if signed() && (request.auth.uid == uid || member(circle, request.auth.uid));
+        allow create, update: if owner(circle) && request.resource.data.keys().hasOnly(['name'])
+          && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 60;
+        allow delete: if owner(circle) || (signed() && request.auth.uid == uid);
+      }
+      match /sharing/{uid} {
+        allow read: if signed() && (request.auth.uid == uid || member(circle, request.auth.uid));
+        allow create, update: if signed() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['enabled']) && request.resource.data.enabled is bool
+          && (request.resource.data.enabled == false || member(circle, uid));
+      }
+      match /history/{uid}/points/{pointId} {
+        allow read: if signed() && (request.auth.uid == uid ||
+          (member(circle, request.auth.uid) && member(circle, uid) && active(circle, uid)));
+        allow create, update: if signed() && request.auth.uid == uid && member(circle, uid) && validPoint(circle,uid)
+          && (resource == null || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uploadedAt']));
+        allow delete: if signed() && request.auth.uid == uid;
+      }
+    }
+  }
+}

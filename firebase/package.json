@@ -1,0 +1,15 @@
+{
+  "name": "family-tracker-security-tests",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "firebase emulators:exec --project demo-family-tracker --only auth,database,firestore 'node --test --test-concurrency=1 tests/*.test.mjs'",
+    "emulators": "firebase emulators:start --project demo-family-tracker --only auth,database,firestore"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "5.0.0",
+    "firebase": "12.6.0",
+    "firebase-tools": "14.26.0"
+  }
+}

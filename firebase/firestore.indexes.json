@@ -1,0 +1,13 @@
+{
+  "indexes": [],
+  "fieldOverrides": [
+    { "collectionGroup": "points", "fieldPath": "latitude", "indexes": [] },
+    { "collectionGroup": "points", "fieldPath": "longitude", "indexes": [] },
+    { "collectionGroup": "points", "fieldPath": "accuracy", "indexes": [] },
+    { "collectionGroup": "points", "fieldPath": "speed", "indexes": [] },
+    { "collectionGroup": "points", "fieldPath": "battery", "indexes": [] },
+    { "collectionGroup": "points", "fieldPath": "uid", "indexes": [] },
+    { "collectionGroup": "points", "fieldPath": "circleId", "indexes": [] },
+    { "collectionGroup": "points", "fieldPath": "uploadedAt", "indexes": [] }
+  ]
+}
