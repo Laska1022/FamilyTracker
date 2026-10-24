@@ -112,6 +112,7 @@ class CircleRepository(
         add: Boolean,
     ) = mutex.withLock {
         require(actor == id || (!add && actor == uid))
+        if (add) require(name.trim().length in 1..60)
         val key = "$actor:$id:$uid"
         val op = JSONObject().put("circle", id).put("uid", uid).put("name", name).put("add", add)
         check(journal.edit().putString(key, op.toString()).commit())
@@ -121,13 +122,20 @@ class CircleRepository(
 
     private suspend fun apply(id: String, uid: String, name: String, add: Boolean) {
         // Firestore first. Until RTDB succeeds the operation is visibly pending and durable.
-        if (add) member(id, uid).set(mapOf("name" to name.take(60))).await()
-        else member(id, uid).delete().await()
+        fs.runBatch { batch ->
+                // Reset stale consent when approving/revoking. An owner can hide another
+                // member's history, but rules never let them enable it.
+                batch.set(fs.document("circles/$id/sharing/$uid"), mapOf("enabled" to false))
+                if (add) batch.set(member(id, uid), mapOf("name" to name.trim().take(60)))
+                else batch.delete(member(id, uid))
+            }
+            .await()
         val updates =
             mutableMapOf<String, Any?>(
-                "members/$uid" to if (add) mapOf("name" to name.take(60)) else null
+                "members/$uid" to if (add) mapOf("name" to name.trim().take(60)) else null
             )
-        if (add) updates["requests/$uid"] = null else updates["locations/$uid"] = null
+        updates["requests/$uid"] = null
+        if (!add) updates["locations/$uid"] = null
         root(id).updateChildren(updates).await()
     }
 

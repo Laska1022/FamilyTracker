@@ -18,20 +18,32 @@ import kotlinx.coroutines.flow.*
 class TrackerViewModel(app: Application) : AndroidViewModel(app) {
     private val graph = (app as TrackerApp).graph!!
     val profile = graph.auth.profiles.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    private val selection =
+        accountCircleSelections(profile, graph.settings::circle)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, AccountCircleSelection(null, null))
     val circleId =
-        profile
-            .flatMapLatest { p -> if (p == null) flowOf(null) else graph.settings.circle(p.uid) }
-            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        selection.map { it.circleId }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val circle =
-        combine(profile, circleId) { p, id -> p to id }
+        selection
             .flatMapLatest { (p, id) ->
-                if (p == null || id == null) flowOf(null) else graph.circles.circle(id, p.uid)
+                if (p == null || id == null) flowOf(null)
+                else graph.circles.circle(id, p.uid).onStart { emit(null) }
             }
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     private val refreshTick = MutableStateFlow(0)
     val live =
-        combine(circle, refreshTick) { c, _ -> c }
-            .flatMapLatest { c -> if (c == null) flowOf(emptyList()) else graph.locations.live(c) }
+        combine(
+                circle.distinctUntilChangedBy { c ->
+                    c?.let { it.id to it.members.map { m -> m.uid }.sorted() }
+                },
+                refreshTick,
+            ) { c, _ ->
+                c
+            }
+            .flatMapLatest { c ->
+                if (c == null) flowOf(emptyList())
+                else graph.locations.live(c).onStart { emit(emptyList()) }
+            }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val interval =
         profile
@@ -53,6 +65,7 @@ class TrackerViewModel(app: Application) : AndroidViewModel(app) {
     val historyLoading = MutableStateFlow(false)
     val historyHidden = MutableStateFlow(false)
     private var historyJob: Job? = null
+    private var historyRequest = 0L
 
     init {
         viewModelScope.launch {
@@ -61,8 +74,15 @@ class TrackerViewModel(app: Application) : AndroidViewModel(app) {
                     if (p != null) {
                         pendingMembership.value = graph.circles.pendingCount(p.uid)
                         if (online)
-                            runCatching { graph.circles.retry(p.uid) }
-                                .onFailure { message.value = R.string.partial_membership }
+                            try {
+                                withTimeout(30_000) { graph.circles.retry(p.uid) }
+                            } catch (e: CancellationException) {
+                                if (e is TimeoutCancellationException)
+                                    message.value = R.string.partial_membership
+                                else throw e
+                            } catch (_: Exception) {
+                                message.value = R.string.partial_membership
+                            }
                         pendingMembership.value = graph.circles.pendingCount(p.uid)
                     }
                 }
@@ -70,18 +90,17 @@ class TrackerViewModel(app: Application) : AndroidViewModel(app) {
         // A new process has no active sharing consent; hide prior history and clear stale live
         // data.
         viewModelScope.launch {
-            combine(profile, circleId) { p, id -> p to id }
-                .collectLatest { (p, id) ->
-                    if (p != null && id != null && tracking.value == TrackingState.STOPPED)
-                        graph.locations.stop(p.uid, id)
-                }
+            selection.collectLatest { (p, id) ->
+                if (p != null && id != null && tracking.value == TrackingState.STOPPED)
+                    graph.locations.stop(p.uid, id)
+            }
         }
     }
 
     private fun action(error: Int = R.string.operation_error, block: suspend () -> Unit) {
         if (busy.value) return
+        busy.value = true
         viewModelScope.launch {
-            busy.value = true
             try {
                 withTimeout(30_000) { block() }
             } catch (e: CancellationException) {
@@ -113,8 +132,8 @@ class TrackerViewModel(app: Application) : AndroidViewModel(app) {
                 graph.firebaseAuth.currentUser?.displayName.orEmpty().ifBlank {
                     p.email.substringBefore('@')
                 }
-            graph.settings.setCircle(p.uid, p.uid)
             graph.circles.create(p.uid, name, actual)
+            graph.settings.setCircle(p.uid, p.uid)
         }
 
     fun joinCircle(code: String) = action {
@@ -167,7 +186,7 @@ class TrackerViewModel(app: Application) : AndroidViewModel(app) {
         }
 
     fun startSharing() {
-        if (circle.value == null) return
+        if (busy.value || circle.value == null) return
         try {
             ContextCompat.startForegroundService(
                 getApplication(),
@@ -219,17 +238,20 @@ class TrackerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadHistory(target: String, date: LocalDate) {
+        val request = ++historyRequest
         historyJob?.cancel()
         history.value = emptyList()
         historyHidden.value = false
+        historyLoading.value = false
         historyJob = viewModelScope.launch {
             val id = circleId.value ?: return@launch
             val p = profile.value ?: return@launch
             val visibility =
                 if (target == p.uid) flowOf(true) else graph.locations.historyVisible(id, target)
             combine(visibility, circle) { visible, c ->
-                    visible && c?.members?.any { it.uid == target } == true
+                    visible && c?.id == id && c.members.any { it.uid == target }
                 }
+                .distinctUntilChanged()
                 .collectLatest { visible ->
                     history.value = emptyList()
                     historyHidden.value = !visible
@@ -252,21 +274,26 @@ class TrackerViewModel(app: Application) : AndroidViewModel(app) {
                         } catch (_: Exception) {
                             message.value = R.string.operation_error
                         } finally {
-                            historyLoading.value = false
+                            if (historyRequest == request) historyLoading.value = false
                         }
                 }
         }
     }
 
     fun closeHistory() {
+        historyRequest++
         historyJob?.cancel()
+        historyJob = null
         history.value = emptyList()
+        historyLoading.value = false
+        historyHidden.value = false
     }
 
     fun deleteHistory() = action {
         val p = profile.value!!
         val id = circleId.value!!
         stopNow()
+        closeHistory()
         graph.locations.stop(p.uid, id)
         graph.locations.deleteHistory(p.uid, id)
         history.value = emptyList()

@@ -4,6 +4,10 @@ Private, consent-based Android location sharing for a small family or trusted Ci
 
 Implemented paths: email registration/sign-in/reset; owner-approved Circle requests and invitations; live map/member details; visible location foreground service; per-device/account 1- or 5-minute interval (default one minute); bounded offline history outbox; date-based routes and distance; history deletion; and server-enforced history visibility. Sharing starts only with explicit consent. Stopping sharing hides history from peers when the revocation reaches Firebase; the user retains their own history.
 
+## Downloads
+
+Development APKs and checksums are published under [GitHub Releases](https://github.com/Laska1022/FamilyTracker/releases). Read the release notes: the emulator APK requires a local backend, and the production-config-required APK shows setup instructions until rebuilt with your Firebase configuration.
+
 ## Build and test
 
 Use Java **21 JDK**, Android SDK **36**, and Node **22+**.

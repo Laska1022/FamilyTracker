@@ -32,6 +32,7 @@ class TrackingService : Service() {
     private var job: Job? = null
     private var identity: Pair<String, String>? = null
     private var callback: LocationCallback? = null
+    private var fixGate: LocationFixGate? = null
 
     override fun onBind(intent: Intent?) = null
 
@@ -58,6 +59,7 @@ class TrackingService : Service() {
             return START_NOT_STICKY
         }
         identity = uid!! to circle!!
+        fixGate = LocationFixGate(SystemClock.elapsedRealtime())
         TrackingStatus.state.value = TrackingState.STARTING
         try {
             foreground()
@@ -117,18 +119,14 @@ class TrackingService : Service() {
     @android.annotation.SuppressLint("MissingPermission")
     private fun locations(interval: ReportingInterval) =
         kotlinx.coroutines.flow.callbackFlow {
-            var lastElapsed = Long.MIN_VALUE
             val listener =
                 object : LocationCallback() {
                     override fun onLocationResult(result: LocationResult) {
                         val location = result.lastLocation ?: return
                         val elapsed = location.elapsedRealtimeNanos / 1_000_000
-                        if (SystemClock.elapsedRealtime() - elapsed > 30_000) return
-                        if (
-                            lastElapsed != Long.MIN_VALUE && elapsed - lastElapsed < interval.millis
-                        )
-                            return
-                        lastElapsed = elapsed
+                        // Fused Location Provider controls the requested frequency. A second
+                        // exact interval gate drops normal jitter and legitimate delayed batches.
+                        if (fixGate?.accept(elapsed, SystemClock.elapsedRealtime()) != true) return
                         trySend(location)
                     }
 
@@ -194,25 +192,28 @@ class TrackingService : Service() {
 
     private fun fail() {
         TrackingStatus.error.value = true
-        stopTracking()
-        TrackingStatus.state.value = TrackingState.ERROR
+        stopTracking(TrackingState.ERROR)
     }
 
-    private fun stopTracking() {
+    private fun stopTracking(finalState: TrackingState = TrackingState.STOPPED) {
         callback?.let { fused.removeLocationUpdates(it) }
         callback = null
+        fixGate = null
         job?.cancel()
         job = null
         val old = identity
         identity = null
         if (old != null) graph.scope.launch { graph.locations.stop(old.first, old.second) }
-        TrackingStatus.state.value = TrackingState.STOPPED
+        TrackingStatus.state.value = finalState
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
-        stopTracking()
+        stopTracking(
+            if (TrackingStatus.state.value == TrackingState.ERROR) TrackingState.ERROR
+            else TrackingState.STOPPED
+        )
         scope.cancel()
         super.onDestroy()
     }

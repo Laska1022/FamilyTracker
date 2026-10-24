@@ -5,6 +5,16 @@ service cloud.firestore {
     function owner(circle) { return signed() && request.auth.uid == circle; }
     function member(circle, uid) { return exists(/databases/$(database)/documents/circles/$(circle)/members/$(uid)); }
     function active(circle, uid) { return get(/databases/$(database)/documents/circles/$(circle)/sharing/$(uid)).data.enabled == true; }
+    // Re-approval must not revive a former member's historical sharing consent.
+    function historyDisabledAfterApproval(circle, uid) {
+      return !exists(/databases/$(database)/documents/circles/$(circle)/sharing/$(uid))
+        || getAfter(/databases/$(database)/documents/circles/$(circle)/sharing/$(uid)).data.enabled == false;
+    }
+    function validMember() {
+      return request.resource.data.keys().hasOnly(['name'])
+        && request.resource.data.name is string && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 60;
+    }
     function validPoint(circle, uid) {
       let p = request.resource.data;
       return p.keys().hasOnly(['uid','circleId','latitude','longitude','accuracy','speed','battery','deviceTime','uploadedAt'])
@@ -25,15 +35,16 @@ service cloud.firestore {
         && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 60;
       match /members/{uid} {
         allow read: if signed() && (request.auth.uid == uid || member(circle, request.auth.uid));
-        allow create, update: if owner(circle) && request.resource.data.keys().hasOnly(['name'])
-          && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 60;
+        allow create: if owner(circle) && validMember() && historyDisabledAfterApproval(circle, uid);
+        allow update: if owner(circle) && validMember();
         allow delete: if owner(circle) || (signed() && request.auth.uid == uid);
       }
       match /sharing/{uid} {
         allow read: if signed() && (request.auth.uid == uid || member(circle, request.auth.uid));
-        allow create, update: if signed() && request.auth.uid == uid
+        allow create, update: if signed()
           && request.resource.data.keys().hasOnly(['enabled']) && request.resource.data.enabled is bool
-          && (request.resource.data.enabled == false || member(circle, uid));
+          && ((request.auth.uid == uid && (request.resource.data.enabled == false || member(circle, uid)))
+            || (owner(circle) && request.resource.data.enabled == false));
       }
       match /history/{uid}/points/{pointId} {
         allow read: if signed() && (request.auth.uid == uid ||

@@ -11,7 +11,7 @@ Kotlin, Compose/Material 3, ViewModel + StateFlow, repositories, Firebase Androi
 - Firestore `circles/{circle}/history/{uid}/points/{uuid}` stores immutable coordinates and original acquisition time plus server upload timestamp. Replaying the same UUID only updates the server upload timestamp, never creates another point.
 - The UI chooses one Circle per account/device; the paths support future multiple Circles. Owners must remove the other members before leaving. Empty owner metadata is retained for recreating that owner's Circle.
 
-Only the account whose UID equals the Circle ID may add members in either database. A member may delete their own membership. Neither a request nor a client-edited profile can self-approve. Live reads are per authorized member, never a root location listener. Coordinates, timestamps, identities, allowed fields and intervals are validated on the server. Owner status does not grant permission to write another person's location, change their sharing flag or delete their history.
+Only the account whose UID equals the Circle ID may add members in either database. A member may delete their own membership. Neither a request nor a client-edited profile can self-approve. Live reads are per authorized member, never a root location listener. Coordinates, timestamps, identities, allowed fields and intervals are validated on the server. Owner status does not grant permission to write another person's location, enable their sharing flag or delete their history. Owners may revoke history visibility. Membership changes reset visibility in the same Firestore batch, so re-approval cannot revive stale consent.
 
 ## Two-database consistency
 
@@ -29,7 +29,7 @@ Other approved members can read history only when the target is still a member a
 
 ## Tracking and offline data
 
-FusedLocationProvider requests balanced-power updates every 60s or 300s. Interval changes replace the callback while running. The original device timestamp is used; old initial fixes and too-frequent callbacks are discarded. Freshness uses acquisition time (at most max(3 minutes, twice the requested interval)), not reconnect time. Android may delay or stop updates, especially force-stop/reboot, disabled location, vendor battery rules or lost network.
+FusedLocationProvider requests balanced-power updates every 60s or 300s. Interval changes replace the callback while running. The original device timestamp is used; pre-consent and duplicate fixes are discarded; normal interval jitter and delayed batches are retained. Freshness uses acquisition time (at most max(3 minutes, twice the requested interval)), not reconnect time. Android may delay or stop updates, especially force-stop/reboot, disabled location, vendor battery rules or lost network.
 
 A private SQLite outbox persists a maximum of 10,000 history points across accounts/Circles (about 6.9 days for a single device at one minute). Oldest unsent records are evicted when full. UUIDs deduplicate retries. Network reconnection and new points trigger synchronization with bounded waits, no polling loop. Removed-member writes are discarded rather than retried forever. Uploads continue after stop, but stopped users' history remains private. Sign-out deletes unsent local points after server revocation. Backups are disabled; no analytics SDK or credentials in the queue. Firestore uses memory cache; RTDB disk persistence is disabled to avoid durable cross-account location caches.
 

@@ -18,6 +18,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.familytracker.app.BuildConfig
 import com.familytracker.app.R
 import com.familytracker.app.domain.LocationPoint
+import java.util.concurrent.atomic.AtomicBoolean
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -47,6 +48,9 @@ fun FamilyMap(
         MapLibre.getInstance(context)
         MapView(context).apply { onCreate(Bundle()) }
     }
+    val alive = remember(view) { AtomicBoolean(true) }
+    var styleAttempt by remember { mutableIntStateOf(0) }
+    var cameraInitialized by remember { mutableStateOf(false) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var ready by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
@@ -60,12 +64,26 @@ fun FamilyMap(
     val errorListener = remember { MapView.OnDidFailLoadingMapListener { failed = true } }
     DisposableEffect(view, lifecycle) {
         view.addOnDidFailLoadingMapListener(errorListener)
+        var started = false
+        var resumed = false
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> view.onStart()
-                Lifecycle.Event.ON_RESUME -> view.onResume()
-                Lifecycle.Event.ON_PAUSE -> view.onPause()
-                Lifecycle.Event.ON_STOP -> view.onStop()
+                Lifecycle.Event.ON_START -> {
+                    if (!started) view.onStart()
+                    started = true
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    if (!resumed) view.onResume()
+                    resumed = true
+                }
+                Lifecycle.Event.ON_PAUSE -> {
+                    if (resumed) view.onPause()
+                    resumed = false
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    if (started) view.onStop()
+                    started = false
+                }
                 else -> Unit
             }
         }
@@ -73,69 +91,17 @@ fun FamilyMap(
         onDispose {
             lifecycle.removeObserver(observer)
             view.removeOnDidFailLoadingMapListener(errorListener)
-            view.onPause()
-            view.onStop()
+            alive.set(false)
+            if (resumed) view.onPause()
+            if (started) view.onStop()
             view.onDestroy()
         }
     }
     LaunchedEffect(view) {
         view.getMapAsync { controller ->
+            if (!alive.get()) return@getMapAsync
             map = controller
             controller.uiSettings.isAttributionEnabled = true
-            controller.setStyle(BuildConfig.MAP_STYLE_URL) { style ->
-                style.addSource(GeoJsonSource("members"))
-                style.addLayer(
-                    CircleLayer("members-fresh", "members")
-                        .withFilter(
-                            Expression.eq(Expression.get("fresh"), Expression.literal(true))
-                        )
-                        .withProperties(
-                            circleColor("#247B72"),
-                            circleRadius(9f),
-                            circleStrokeColor("#FFFFFF"),
-                            circleStrokeWidth(3f),
-                        )
-                )
-                style.addLayer(
-                    CircleLayer("members-stale", "members")
-                        .withFilter(
-                            Expression.eq(Expression.get("fresh"), Expression.literal(false))
-                        )
-                        .withProperties(
-                            circleColor("#737373"),
-                            circleRadius(9f),
-                            circleStrokeColor("#FFFFFF"),
-                            circleStrokeWidth(3f),
-                        )
-                )
-                style.addLayer(
-                    SymbolLayer("member-names", "members")
-                        .withProperties(
-                            textField(Expression.get("name")),
-                            textSize(12f),
-                            textOffset(arrayOf(0f, 1.8f)),
-                            textColor("#1C3630"),
-                            textHaloColor("#FFFFFF"),
-                            textHaloWidth(1.5f),
-                        )
-                )
-                style.addSource(GeoJsonSource("route"))
-                style.addLayer(
-                    LineLayer("route-line", "route")
-                        .withProperties(lineColor("#247B72"), lineWidth(4f))
-                )
-                style.addSource(GeoJsonSource("route-points"))
-                style.addLayer(
-                    CircleLayer("route-dots", "route-points")
-                        .withProperties(
-                            circleColor("#247B72"),
-                            circleRadius(5f),
-                            circleStrokeColor("#FFFFFF"),
-                            circleStrokeWidth(1.5f),
-                        )
-                )
-                ready = true
-            }
             controller.addOnMapClickListener { coordinate ->
                 val feature =
                     controller
@@ -146,13 +112,66 @@ fun FamilyMap(
                             "members-stale",
                         )
                         .firstOrNull()
-                val id = feature?.getStringProperty("id")
-                val uid = feature?.getStringProperty("uid")
-                currentPoints
-                    .firstOrNull { if (uid != null) it.uid == uid else it.id == id }
-                    ?.let { currentSelection(it) }
+                selectedPoint(feature, currentPoints)?.let { currentSelection(it) }
                 feature != null
             }
+        }
+    }
+    LaunchedEffect(map, styleAttempt) {
+        val controller = map ?: return@LaunchedEffect
+        if (!alive.get()) return@LaunchedEffect
+        ready = false
+        failed = false
+        controller.setStyle(BuildConfig.MAP_STYLE_URL) { style ->
+            if (!alive.get()) return@setStyle
+            style.addSource(GeoJsonSource("members"))
+            style.addLayer(
+                CircleLayer("members-fresh", "members")
+                    .withFilter(Expression.eq(Expression.get("fresh"), Expression.literal(true)))
+                    .withProperties(
+                        circleColor("#247B72"),
+                        circleRadius(9f),
+                        circleStrokeColor("#FFFFFF"),
+                        circleStrokeWidth(3f),
+                    )
+            )
+            style.addLayer(
+                CircleLayer("members-stale", "members")
+                    .withFilter(Expression.eq(Expression.get("fresh"), Expression.literal(false)))
+                    .withProperties(
+                        circleColor("#737373"),
+                        circleRadius(9f),
+                        circleStrokeColor("#FFFFFF"),
+                        circleStrokeWidth(3f),
+                    )
+            )
+            style.addLayer(
+                SymbolLayer("member-names", "members")
+                    .withProperties(
+                        textField(Expression.get("name")),
+                        textSize(12f),
+                        textOffset(arrayOf(0f, 1.8f)),
+                        textColor("#1C3630"),
+                        textHaloColor("#FFFFFF"),
+                        textHaloWidth(1.5f),
+                    )
+            )
+            style.addSource(GeoJsonSource("route"))
+            style.addLayer(
+                LineLayer("route-line", "route").withProperties(lineColor("#247B72"), lineWidth(4f))
+            )
+            style.addSource(GeoJsonSource("route-points"))
+            style.addLayer(
+                CircleLayer("route-dots", "route-points")
+                    .withProperties(
+                        circleColor("#247B72"),
+                        circleRadius(5f),
+                        circleStrokeColor("#FFFFFF"),
+                        circleStrokeWidth(1.5f),
+                    )
+            )
+            failed = false
+            ready = true
         }
     }
     LaunchedEffect(points, names, ready, route, clock) {
@@ -205,13 +224,15 @@ fun FamilyMap(
                     else emptyList()
                 )
             )
-        if (points.isNotEmpty() && m.cameraPosition.zoom < 3)
+        if (points.isNotEmpty() && !cameraInitialized) {
+            cameraInitialized = true
             m.moveCamera(
                 CameraUpdateFactory.newLatLngZoom(
                     LatLng(points.first().latitude, points.first().longitude),
                     12.0,
                 )
             )
+        }
     }
     LaunchedEffect(focus, cameraRequest, ready) {
         if (ready && focus != null)
@@ -229,6 +250,14 @@ fun FamilyMap(
                 Icon(Icons.Default.Remove, stringResource(R.string.zoom_out))
             }
         }
-        if (failed) Surface { Text(stringResource(R.string.map_error)) }
+        if (failed)
+            Surface {
+                Column {
+                    Text(stringResource(R.string.map_error))
+                    TextButton(onClick = { styleAttempt++ }) {
+                        Text(stringResource(R.string.refresh))
+                    }
+                }
+            }
     }
 }

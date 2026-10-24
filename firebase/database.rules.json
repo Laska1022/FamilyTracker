@@ -27,7 +27,7 @@
           ".read": "auth != null && auth.uid == $circle",
           "$uid": {
             ".read": "auth != null && auth.uid == $uid",
-            ".write": "(auth != null && auth.uid == $uid && root.child('circles').child($circle).child('name').exists() && !root.child('circles').child($circle).child('members').child($uid).exists()) || (auth != null && auth.uid == $circle && !newData.exists())",
+            ".write": "(auth != null && auth.uid == $uid && (!newData.exists() || (root.child('circles').child($circle).child('name').exists() && !root.child('circles').child($circle).child('members').child($uid).exists()))) || (auth != null && auth.uid == $circle && !newData.exists())",
             ".validate": "newData.hasChildren(['name'])",
             "name": {
               ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60"

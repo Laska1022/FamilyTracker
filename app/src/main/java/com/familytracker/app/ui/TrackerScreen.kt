@@ -29,6 +29,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.*
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.familytracker.app.R
 import com.familytracker.app.domain.*
@@ -101,15 +103,18 @@ fun TrackerScreen(vm: TrackerViewModel) {
         Box(Modifier.fillMaxSize().padding(padding)) {
             if (profile == null) LoginScreen(vm, busy)
             else
-                when (tab) {
-                    0 ->
-                        MapScreen(vm) { uid ->
-                            historyMember = uid
-                            tab = 2
-                        }
-                    1 -> CircleScreen(vm)
-                    2 -> HistoryScreen(vm, historyMember ?: profile!!.uid) { historyMember = it }
-                    else -> SettingsScreen(vm)
+                key(profile!!.uid) {
+                    when (tab) {
+                        0 ->
+                            MapScreen(vm) { uid ->
+                                historyMember = uid
+                                tab = 2
+                            }
+                        1 -> CircleScreen(vm)
+                        2 ->
+                            HistoryScreen(vm, historyMember ?: profile!!.uid) { historyMember = it }
+                        else -> SettingsScreen(vm)
+                    }
                 }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
         }
@@ -183,6 +188,7 @@ private fun LoginScreen(vm: TrackerViewModel, busy: Boolean) {
 @Composable
 private fun SharingControl(vm: TrackerViewModel) {
     val state by vm.tracking.collectAsStateWithLifecycle()
+    val busy by vm.busy.collectAsStateWithLifecycle()
     val revoking by vm.revocationPending.collectAsStateWithLifecycle()
     val circle by vm.circle.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -213,7 +219,7 @@ private fun SharingControl(vm: TrackerViewModel) {
         )
         Button(
             onClick = { if (active) vm.stopSharing() else explain = true },
-            enabled = active || circle != null,
+            enabled = active || (!busy && circle != null),
             modifier = Modifier.fillMaxWidth(),
             colors =
                 if (active)
@@ -579,9 +585,18 @@ private fun HistoryScreen(vm: TrackerViewModel, target: String, onTarget: (Strin
                 Text(dateText)
             }
         }
-        FamilyMap(points, emptyMap(), true, selected, camera, Modifier.fillMaxWidth().weight(1f)) {
-            selected = it
-            camera++
+        key(target, dateText) {
+            FamilyMap(
+                points,
+                emptyMap(),
+                true,
+                selected,
+                camera,
+                Modifier.fillMaxWidth().weight(1f),
+            ) {
+                selected = it
+                camera++
+            }
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyColumn(
@@ -656,6 +671,14 @@ private fun SettingsScreen(vm: TrackerViewModel) {
     val trackingError by vm.trackingError.collectAsStateWithLifecycle()
     val circle by vm.circle.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var permissionGranted by remember { mutableStateOf(false) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        permissionGranted =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
+    }
     var signOut by remember { mutableStateOf(false) }
     var delete by remember { mutableStateOf(false) }
     Column(

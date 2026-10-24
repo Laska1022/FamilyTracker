@@ -4,7 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 // Production config stays local. The emulator flavor initializes Firebase explicitly.
-if (file("google-services.json").exists()) apply(plugin = "com.google.gms.google-services")
+if (file("google-services.json").exists() || file("src/production/google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+    tasks.withType<com.google.gms.googleservices.GoogleServicesTask>().configureEach {
+        if (name.contains("Emulator")) enabled = false
+    }
+}
 android {
     namespace = "com.familytracker.app"
     compileSdk = 36
@@ -13,8 +18,8 @@ android {
         applicationId = "com.familytracker.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "MAP_STYLE_URL", "\"https://tiles.openfreemap.org/styles/liberty\"")
     }

@@ -7,6 +7,7 @@ import com.google.firebase.database.*
 import com.google.firebase.firestore.*
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.*
@@ -30,12 +31,22 @@ class LocationRepository(
     val syncError = MutableStateFlow(false)
     val revocationPending = MutableStateFlow(false)
     private val syncMutex = Mutex()
-    private var liveSession: Pair<String, String>? = null
+    private val syncRequested = AtomicBoolean(false)
+    private val consentMutex = Mutex()
+    private val consent = RecordingConsent()
+    private var authUid = auth.currentUser?.uid
 
     init {
         scope.launch { connected.collect { if (it) sync() } }
         auth.addAuthStateListener {
-            if (it.currentUser != null) scope.launch { sync() } else pending.value = 0
+            val nextUid = it.currentUser?.uid
+            if (authUid != nextUid) consent.stop()
+            authUid = nextUid
+            if (it.currentUser != null) scope.launch { sync() }
+            else {
+                pending.value = 0
+                revocationPending.value = false
+            }
         }
     }
 
@@ -70,80 +81,105 @@ class LocationRepository(
         awaitClose { listener.remove() }
     }
 
-    suspend fun begin(uid: String, circle: String) {
-        syncMutex.withLock {
-            fs.document("circles/$circle/sharing/$uid").set(mapOf("enabled" to true)).await()
-            outbox.clearStop(uid, circle)
-            revocationPending.value = outbox.pendingStops(uid).isNotEmpty()
-            liveSession = uid to circle
-            db.getReference("circles/$circle/locations/$uid").onDisconnect().removeValue().await()
-        }
+    suspend fun begin(uid: String, circle: String) = consentMutex.withLock {
+        check(auth.currentUser?.uid == uid)
+        val attempt = consent.prepareStart()
+        // Arm cleanup before advertising sharing. Stop invalidates this attempt immediately,
+        // even when acknowledgement is still in flight.
+        db.getReference("circles/$circle/locations/$uid").onDisconnect().removeValue().await()
+        fs.document("circles/$circle/sharing/$uid").set(mapOf("enabled" to true)).await()
+        check(auth.currentUser?.uid == uid && consent.activate(attempt, uid, circle))
+        withContext(Dispatchers.IO) { outbox.clearStop(uid, circle) }
+        revocationPending.value =
+            withContext(Dispatchers.IO) { outbox.pendingStops(uid).isNotEmpty() }
     }
 
     suspend fun record(p: LocationPoint) {
-        if (!p.isValid()) return
-        withContext(Dispatchers.IO) {
-            outbox.enqueue(p)
-            pending.value = outbox.count(p.uid)
-        }
+        if (!p.isValid() || auth.currentUser?.uid != p.uid) return
+        val session = consent.session(p.uid, p.circleId) ?: return
+        val accepted =
+            withContext(Dispatchers.IO) {
+                val recorded = consent.ifCurrent(session) { outbox.enqueue(p) }
+                pending.value = outbox.count(p.uid)
+                recorded
+            }
+        if (!accepted) return
         // Realtime keeps only the latest point; history is uploaded independently from its bounded
         // outbox.
-        if (liveSession == (p.uid to p.circleId) && connected.value) {
-            val ref = db.getReference("circles/${p.circleId}/locations/${p.uid}")
-            ref.onDisconnect().removeValue()
-            ref.setValue(
-                    mapOf(
-                        "uid" to p.uid,
-                        "circleId" to p.circleId,
-                        "latitude" to p.latitude,
-                        "longitude" to p.longitude,
-                        "accuracy" to p.accuracy,
-                        "battery" to p.battery,
-                        "deviceTime" to p.deviceTime,
-                        "uploadedAt" to ServerValue.TIMESTAMP,
-                        "intervalMs" to p.intervalMs,
+        if (connected.value && auth.currentUser?.uid == p.uid)
+            consent.ifCurrent(session) {
+                val ref = db.getReference("circles/${p.circleId}/locations/${p.uid}")
+                ref.onDisconnect().removeValue()
+                ref.setValue(
+                        mapOf(
+                            "uid" to p.uid,
+                            "circleId" to p.circleId,
+                            "latitude" to p.latitude,
+                            "longitude" to p.longitude,
+                            "accuracy" to p.accuracy,
+                            "battery" to p.battery,
+                            "deviceTime" to p.deviceTime,
+                            "uploadedAt" to ServerValue.TIMESTAMP,
+                            "intervalMs" to p.intervalMs,
+                        )
                     )
-                )
-                .addOnFailureListener { syncError.value = true }
-        }
+                    .addOnFailureListener { syncError.value = true }
+            }
         scope.launch { sync() }
     }
 
-    suspend fun confirmStopped(uid: String, circle: String) {
-        check(connected.value) { "Connection required to confirm revocation" }
+    suspend fun confirmStopped(uid: String, circle: String) = consentMutex.withLock {
+        check(auth.currentUser?.uid == uid && connected.value) {
+            "Connection required to confirm revocation"
+        }
         withTimeout(15_000) {
             fs.document("circles/$circle/sharing/$uid").set(mapOf("enabled" to false)).await()
             db.getReference("circles/$circle/locations/$uid").removeValue().await()
         }
-        outbox.clearStop(uid, circle)
-        revocationPending.value = outbox.pendingStops(uid).isNotEmpty()
+        withContext(Dispatchers.IO) { outbox.clearStop(uid, circle) }
+        revocationPending.value =
+            withContext(Dispatchers.IO) { outbox.pendingStops(uid).isNotEmpty() }
     }
 
     suspend fun stop(uid: String, circle: String) {
-        liveSession = null
+        // Invalidate callbacks synchronously, before any network/SQLite suspension.
+        consent.stop()
         revocationPending.value = true
-        withContext(Dispatchers.IO) { outbox.markStopped(uid, circle) }
-        fs.document("circles/$circle/sharing/$uid").set(mapOf("enabled" to false))
-        // Queued delete persists as a tombstone across process death, and onDisconnect is also
-        // armed.
-        db.getReference("circles/$circle/locations/$uid").removeValue()
+        consentMutex.withLock {
+            withContext(Dispatchers.IO) { outbox.markStopped(uid, circle) }
+            if (auth.currentUser?.uid == uid) {
+                fs.document("circles/$circle/sharing/$uid").set(mapOf("enabled" to false))
+                db.getReference("circles/$circle/locations/$uid").removeValue()
+            }
+        }
         scope.launch { sync() }
     }
 
     suspend fun sync() {
+        syncRequested.set(true)
+        drain()
+    }
+
+    private suspend fun drain() {
         if (!syncMutex.tryLock()) return
+        syncRequested.set(false)
         val uid = auth.currentUser?.uid
         var before = 0
         try {
             before = if (uid == null) 0 else withContext(Dispatchers.IO) { outbox.count(uid) }
             syncLocked()
         } finally {
-            if (uid != null)
-                pending.value = withContext(NonCancellable + Dispatchers.IO) { outbox.count(uid) }
-            syncMutex.unlock()
+            try {
+                if (uid != null && auth.currentUser?.uid == uid)
+                    pending.value =
+                        withContext(NonCancellable + Dispatchers.IO) { outbox.count(uid) }
+            } finally {
+                syncMutex.unlock()
+            }
         }
         // Continue a productive time slice until the backlog is empty. Do not spin on failures.
-        if (connected.value && pending.value > 0 && pending.value < before) scope.launch { sync() }
+        if (syncRequested.get() || (connected.value && pending.value > 0 && pending.value < before))
+            scope.launch { drain() }
     }
 
     private suspend fun syncLocked() {
@@ -152,14 +188,21 @@ class LocationRepository(
         if (!connected.value) return
         try {
             withTimeout(30_000) {
-                for (circle in outbox.pendingStops(uid)) {
-                    fs.document("circles/$circle/sharing/$uid")
-                        .set(mapOf("enabled" to false))
-                        .await()
-                    db.getReference("circles/$circle/locations/$uid").removeValue().await()
-                    outbox.clearStop(uid, circle)
+                // Serialize tombstone replay with explicit starts. Otherwise an old stop
+                // finishing after a new Start could silently re-hide the active session.
+                consentMutex.withLock {
+                    val stops = withContext(Dispatchers.IO) { outbox.pendingStops(uid) }
+                    for (circle in stops) {
+                        if (auth.currentUser?.uid != uid) return@withTimeout
+                        fs.document("circles/$circle/sharing/$uid")
+                            .set(mapOf("enabled" to false))
+                            .await()
+                        db.getReference("circles/$circle/locations/$uid").removeValue().await()
+                        withContext(Dispatchers.IO) { outbox.clearStop(uid, circle) }
+                    }
+                    revocationPending.value =
+                        withContext(Dispatchers.IO) { outbox.pendingStops(uid).isNotEmpty() }
                 }
-                revocationPending.value = outbox.pendingStops(uid).isNotEmpty()
                 while (connected.value && auth.currentUser?.uid == uid) {
                     val batch = withContext(Dispatchers.IO) { outbox.pending(uid) }
                     if (batch.isEmpty()) break
@@ -236,7 +279,7 @@ class LocationRepository(
         pending.value = outbox.count(uid)
     }
 
-    suspend fun clearLocal(uid: String) {
+    suspend fun clearLocal(uid: String) = syncMutex.withLock {
         withContext(Dispatchers.IO) { outbox.clear(uid) }
         pending.value = 0
     }

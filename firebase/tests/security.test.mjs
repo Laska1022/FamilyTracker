@@ -2,7 +2,7 @@ import {readFileSync} from 'node:fs';
 import {before,after,beforeEach,test} from 'node:test';
 import assert from 'node:assert/strict';
 import {initializeTestEnvironment,assertFails,assertSucceeds} from '@firebase/rules-unit-testing';
-import {doc,setDoc,getDoc,deleteDoc,collection,getDocs,query,where,orderBy,serverTimestamp} from 'firebase/firestore';
+import {doc,setDoc,getDoc,deleteDoc,collection,getDocs,query,where,orderBy,serverTimestamp,writeBatch} from 'firebase/firestore';
 import {ref,set,get,remove,update,serverTimestamp as rtTime} from 'firebase/database';
 let env;
 const projectId='demo-family-tracker';
@@ -108,4 +108,38 @@ test('unapproved users cannot publish location or enable sharing',async()=> {
  await assertFails(setDoc(doc(fs('stranger'),'circles/owner/history/stranger/points/new'),point('stranger')));
  await assertFails(setDoc(doc(fs('stranger'),'circles/owner/sharing/stranger'),{enabled:true}));
  await assertSucceeds(setDoc(doc(fs('stranger'),'circles/owner/sharing/stranger'),{enabled:false}));
+});
+
+test('re-approval cannot resurrect stale history consent',async()=> {
+ await assertSucceeds(deleteDoc(doc(fs('owner'),'circles/owner/members/member')));
+ await assertFails(setDoc(doc(fs('owner'),'circles/owner/members/member'),{name:'Member'}));
+ const ownerFs=fs('owner');const batch=writeBatch(ownerFs);
+ batch.set(doc(ownerFs,'circles/owner/sharing/member'),{enabled:false});
+ batch.set(doc(ownerFs,'circles/owner/members/member'),{name:'Member'});
+ await assertSucceeds(batch.commit());
+ await assertFails(getDoc(doc(fs('owner'),path)));
+ await assertFails(getDocs(query(collection(fs('owner'),'circles/owner/history/member/points'),orderBy('deviceTime'))));
+ await assertSucceeds(setDoc(doc(fs('member'),'circles/owner/sharing/member'),{enabled:true}));
+ await assertSucceeds(getDoc(doc(fs('owner'),path)));
+});
+test('owner can revoke another member history but never grant their consent',async()=> {
+ await assertSucceeds(setDoc(doc(fs('owner'),'circles/owner/sharing/member'),{enabled:false}));
+ await assertFails(getDoc(doc(fs('owner'),path)));
+ await assertFails(setDoc(doc(fs('owner'),'circles/owner/sharing/member'),{enabled:true}));
+ await assertSucceeds(getDoc(doc(fs('member'),path)));
+});
+test('members can cancel their own outstanding request after approval, but not another request',async()=> {
+ await env.withSecurityRulesDisabled(async ctx=>set(ref(ctx.database(),'circles/owner/requests/member'),{name:'Member'}));
+ await assertSucceeds(remove(ref(db('member'),'circles/owner/requests/member')));
+ await assertSucceeds(set(ref(db('stranger'),'circles/owner/requests/stranger'),{name:'Stranger'}));
+ await assertFails(remove(ref(db('member'),'circles/owner/requests/stranger')));
+ await assertSucceeds(remove(ref(db('stranger'),'circles/owner/requests/stranger')));
+});
+test('membership in a different Circle confers no access and clients cannot forge upload time',async()=> {
+ await assertSucceeds(setDoc(doc(fs('stranger'),'circles/stranger/members/stranger'),{name:'Stranger'}));
+ await assertSucceeds(set(ref(db('stranger'),'circles/stranger/members/stranger'),{name:'Stranger'}));
+ await assertFails(getDoc(doc(fs('stranger'),path)));
+ await assertFails(get(ref(db('stranger'),'circles/owner/locations/member')));
+ await assertFails(setDoc(doc(fs('member'),'circles/owner/history/member/points/forged'),{...point(),uploadedAt:new Date(0)}));
+ await assertFails(set(ref(db('member'),'circles/owner/locations/member'),{...live(),uploadedAt:1}));
 });

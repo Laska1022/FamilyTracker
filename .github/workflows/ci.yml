@@ -5,32 +5,77 @@ on:
 permissions:
   contents: read
 jobs:
-  verify:
-    runs-on: ubuntu-latest
+  android:
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-java@v6.1.0
         with:
           distribution: temurin
           java-version: '21'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '22'
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - run: ./gradlew :app:assembleEmulatorDebug :app:assembleProductionDebug :app:testEmulatorDebugUnitTest :app:lintEmulatorDebug
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: android-reports
+          path: app/build/reports/
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: debug-apks
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/emulator/debug/*.apk
+            app/build/outputs/apk/production/debug/*.apk
+  firebase:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: firebase/package-lock.json
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
-      - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew :app:assembleEmulatorDebug :app:testEmulatorDebugUnitTest :app:lintEmulatorDebug
       - run: npm ci
         working-directory: firebase
       - run: npm test
         working-directory: firebase
-      - uses: actions/upload-artifact@v4
-        if: always()
+  publish-preview:
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-preview.')
+    needs: [android, firebase]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
         with:
-          name: android-reports-and-debug-apk
-          path: |
-            app/build/reports/
-            app/build/outputs/apk/emulator/debug/*.apk
+          name: debug-apks
+          path: downloaded-apks
+      - name: Prepare APKs and checksums
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          cp downloaded-apks/emulator/debug/app-emulator-debug.apk "release-assets/FamilyTracker-${RELEASE_TAG}-emulator-debug.apk"
+          cp downloaded-apks/production/debug/app-production-debug.apk "release-assets/FamilyTracker-${RELEASE_TAG}-production-config-required-debug.apk"
+          cd release-assets
+          sha256sum *.apk > SHA256SUMS
+      - name: Publish tested development preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" release-assets/*.apk release-assets/SHA256SUMS --verify-tag --prerelease --title "Family Tracker $RELEASE_TAG — development preview" --notes-file docs/RELEASE_NOTES.md
